@@ -1,10 +1,16 @@
 #include <Arduino.h>
+#include <Preferences.h>
 #include <TFT_eSPI.h>
 #include <lvgl.h>
 #include <time.h>
 
 #include "network_task.h"
 #include "ui.h"
+
+// Touch presses aren't registering on this unit at all (confirmed via a raw-read diagnostic
+// build) - disabled until the touch controller mismatch is resolved, so setup() doesn't hang
+// forever in tft.calibrateTouch() waiting for a press that never comes.
+#define ENABLE_TOUCH 0
 
 static const uint32_t SCREEN_W = 320;
 static const uint32_t SCREEN_H = 240;
@@ -26,12 +32,48 @@ static void dispFlush(lv_disp_drv_t* drv, const lv_area_t* area, lv_color_t* col
     lv_disp_flush_ready(drv);
 }
 
+static void touchpadRead(lv_indev_drv_t* indev, lv_indev_data_t* data) {
+    uint16_t tx, ty;
+    if (tft.getTouch(&tx, &ty)) {
+        data->state = LV_INDEV_STATE_PRESSED;
+        data->point.x = tx;
+        data->point.y = ty;
+    } else {
+        data->state = LV_INDEV_STATE_RELEASED;
+    }
+}
+
+// Resistive touch needs per-unit calibration (the raw ADC range varies panel to panel).
+// Calibrate once and persist the result to flash, so this only runs on the very first boot.
+static void initTouch() {
+    Preferences prefs;
+    prefs.begin("touchcal", false);
+
+    uint16_t calData[5];
+    size_t len = prefs.getBytes("caldata", calData, sizeof(calData));
+    if (len == sizeof(calData)) {
+        tft.setTouch(calData);
+        Serial.println("[touch] loaded saved calibration");
+    } else {
+        Serial.println("[touch] no calibration saved - follow the on-screen prompts, tap each crosshair");
+        tft.calibrateTouch(calData, TFT_WHITE, TFT_RED, 15);
+        prefs.putBytes("caldata", calData, sizeof(calData));
+        Serial.println("[touch] calibration complete and saved");
+    }
+
+    prefs.end();
+}
+
 void setup() {
     Serial.begin(115200);
 
     tft.init();
     tft.setRotation(1); // landscape, 320x240
     tft.fillScreen(TFT_BLACK);
+#if ENABLE_TOUCH
+    initTouch();
+    tft.fillScreen(TFT_BLACK); // calibrateTouch leaves its crosshairs on screen otherwise
+#endif
 
     lv_init();
     lv_disp_draw_buf_init(&drawBuf, lvBuf1, nullptr, SCREEN_W * 20);
@@ -43,6 +85,14 @@ void setup() {
     dispDrv.flush_cb = dispFlush;
     dispDrv.draw_buf = &drawBuf;
     lv_disp_drv_register(&dispDrv);
+
+#if ENABLE_TOUCH
+    static lv_indev_drv_t indevDrv;
+    lv_indev_drv_init(&indevDrv);
+    indevDrv.type = LV_INDEV_TYPE_POINTER;
+    indevDrv.read_cb = touchpadRead;
+    lv_indev_drv_register(&indevDrv);
+#endif
 
     ui_init();
     networkTaskStart();
