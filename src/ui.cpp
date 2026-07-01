@@ -2,6 +2,10 @@
 
 #include <lvgl.h>
 
+#include "secrets.h"
+
+static const int TOP_BAR_H = 22;
+
 static lv_obj_t* s_errorView;
 static lv_obj_t* s_idleView;
 static lv_obj_t* s_singleView;
@@ -31,6 +35,20 @@ static void formatTime(uint32_t ms, char* out, size_t outSize) {
     uint32_t m = totalSec / 60;
     uint32_t s = totalSec % 60;
     snprintf(out, outSize, "%lu:%02lu", (unsigned long)m, (unsigned long)s);
+}
+
+// Gives the table a dark theme (LVGL's default table style is light-mode) and highlights
+// the header row (row 0) with a slightly lighter background + accent text color.
+static void tableDrawPartEventCb(lv_event_t* e) {
+    lv_obj_t* obj = lv_event_get_target(e);
+    lv_obj_draw_part_dsc_t* dsc = lv_event_get_draw_part_dsc(e);
+    if (dsc->part != LV_PART_ITEMS) return;
+
+    uint32_t row = dsc->id / lv_table_get_col_cnt(obj);
+    if (row == 0) {
+        dsc->rect_dsc->bg_color = lv_color_hex(0x2a2a3a);
+        dsc->label_dsc->color = lv_palette_main(LV_PALETTE_YELLOW);
+    }
 }
 
 static void hideAllViews() {
@@ -96,8 +114,11 @@ void ui_init() {
     lv_obj_set_style_bg_opa(overlay, LV_OPA_70, 0);
     lv_obj_set_style_border_width(overlay, 0, 0);
     lv_obj_set_style_radius(overlay, 0, 0);
-    lv_obj_set_style_pad_all(overlay, 6, 0);
+    lv_obj_set_style_pad_all(overlay, 4, 0);
     lv_obj_clear_flag(overlay, LV_OBJ_FLAG_SCROLLABLE);
+    // Note: child positions below are relative to this content area (already inset by the
+    // 4px padding above, on all 4 sides) - this box is flush with the screen edge, so
+    // anything past its content height (90 - 2*4 = 82px) gets clipped off-screen.
 
     s_userLabel = lv_label_create(overlay);
     lv_obj_set_style_text_font(s_userLabel, &lv_font_montserrat_14, 0);
@@ -109,39 +130,68 @@ void ui_init() {
     lv_obj_set_style_text_color(s_titleLabel, lv_color_white(), 0);
     lv_label_set_long_mode(s_titleLabel, LV_LABEL_LONG_DOT);
     lv_obj_set_width(s_titleLabel, 300);
-    lv_obj_set_pos(s_titleLabel, 0, 16);
+    lv_obj_set_pos(s_titleLabel, 0, 14);
 
     s_subtitleLabel = lv_label_create(overlay);
     lv_obj_set_style_text_font(s_subtitleLabel, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_subtitleLabel, lv_color_white(), 0);
     lv_label_set_long_mode(s_subtitleLabel, LV_LABEL_LONG_DOT);
     lv_obj_set_width(s_subtitleLabel, 300);
-    lv_obj_set_pos(s_subtitleLabel, 0, 40);
+    lv_obj_set_pos(s_subtitleLabel, 0, 34);
 
     s_stateLabel = lv_label_create(overlay);
     lv_obj_set_style_text_font(s_stateLabel, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_stateLabel, lv_palette_main(LV_PALETTE_GREEN), 0);
-    lv_obj_set_pos(s_stateLabel, 0, 58);
+    lv_obj_set_pos(s_stateLabel, 0, 50);
 
     s_progressBar = lv_bar_create(overlay);
     lv_obj_set_size(s_progressBar, 220, 8);
-    lv_obj_set_pos(s_progressBar, 0, 76);
+    lv_obj_set_pos(s_progressBar, 0, 64);
     lv_bar_set_range(s_progressBar, 0, 100);
 
     s_timeLabel = lv_label_create(overlay);
     lv_obj_set_style_text_font(s_timeLabel, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_timeLabel, lv_color_white(), 0);
-    lv_obj_set_pos(s_timeLabel, 230, 74);
+    lv_obj_set_pos(s_timeLabel, 230, 62);
 
     // --- Table view (2+ concurrent sessions) ---
     s_tableView = lv_table_create(scr);
-    lv_obj_set_size(s_tableView, 320, 240);
-    lv_obj_set_pos(s_tableView, 0, 0);
+    lv_obj_set_size(s_tableView, 320, 240 - TOP_BAR_H);
+    lv_obj_set_pos(s_tableView, 0, TOP_BAR_H);
     lv_table_set_col_cnt(s_tableView, 3);
     lv_table_set_col_width(s_tableView, 0, 70);
     lv_table_set_col_width(s_tableView, 1, 170);
     lv_table_set_col_width(s_tableView, 2, 80);
     lv_obj_set_style_text_font(s_tableView, &lv_font_montserrat_14, 0);
+
+    // Dark theme: LVGL's default table style is light-mode (white cells/black text/gray border).
+    lv_obj_set_style_bg_color(s_tableView, lv_color_hex(0x121212), LV_PART_MAIN);
+    lv_obj_set_style_border_color(s_tableView, lv_color_hex(0x333333), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_tableView, lv_color_hex(0x1e1e1e), LV_PART_ITEMS);
+    lv_obj_set_style_bg_opa(s_tableView, LV_OPA_COVER, LV_PART_ITEMS);
+    lv_obj_set_style_text_color(s_tableView, lv_color_white(), LV_PART_ITEMS);
+    lv_obj_set_style_border_color(s_tableView, lv_color_hex(0x333333), LV_PART_ITEMS);
+    lv_obj_set_style_border_width(s_tableView, 1, LV_PART_ITEMS);
+    lv_obj_add_event_cb(s_tableView, tableDrawPartEventCb, LV_EVENT_DRAW_PART_BEGIN, nullptr);
+
+    // --- Persistent server-name bar, shown above every view ---
+    lv_obj_t* topBar = lv_obj_create(scr);
+    lv_obj_set_size(topBar, 320, TOP_BAR_H);
+    lv_obj_set_pos(topBar, 0, 0);
+    lv_obj_set_style_bg_color(topBar, lv_color_hex(0x141414), 0);
+    lv_obj_set_style_bg_opa(topBar, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(topBar, 0, 0);
+    lv_obj_set_style_radius(topBar, 0, 0);
+    lv_obj_set_style_pad_all(topBar, 2, 0);
+    lv_obj_clear_flag(topBar, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t* serverLabel = lv_label_create(topBar);
+    lv_label_set_text(serverLabel, PLEX_SERVER_NAME);
+    lv_obj_set_style_text_font(serverLabel, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(serverLabel, lv_color_white(), 0);
+    lv_obj_align(serverLabel, LV_ALIGN_LEFT_MID, 2, 0);
+
+    lv_obj_move_foreground(topBar); // always on top, regardless of which view is active
 
     hideAllViews();
 }

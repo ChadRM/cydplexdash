@@ -16,6 +16,11 @@ static int g_artBufW = 0;
 static int g_artBufH = 0;
 static char g_lastThumbPath[128] = "";
 
+// Scratch buffer for the compressed JPEG bytes, allocated once at startup (not per-fetch)
+// so a fragmented heap can't fail the allocation after the device has been running a while.
+static uint8_t* g_jpegScratch = nullptr;
+static size_t g_jpegScratchCap = 0;
+
 // Set only while a decode is in flight; the TJpg_Decoder callback writes through it.
 static uint16_t* g_decodeTarget = nullptr;
 static int g_decodeW = 0;
@@ -44,38 +49,39 @@ static bool fetchAndDecodeArt(const char* thumbPath) {
 
     int code = http.GET();
     if (code != HTTP_CODE_OK) {
+        Serial.printf("[art] GET failed, HTTP code %d\n", code);
         http.end();
         return false;
     }
 
-    int len = http.getSize();
-    if (len <= 0 || len > 150000) { // sanity cap; a 320x240 JPEG thumbnail is well under this
-        http.end();
-        return false;
-    }
-
-    uint8_t* buf = (uint8_t*)malloc(len);
-    if (!buf) {
-        http.end();
-        return false;
-    }
-
+    // Plex's photo transcoder resizes on the fly and often replies without a Content-Length
+    // (chunked encoding), so http.getSize() can be -1. Read until the stream stops producing
+    // data instead of trusting a declared length.
     WiFiClient* stream = http.getStreamPtr();
-    int received = 0;
+    size_t received = 0;
     unsigned long startMs = millis();
-    while (received < len && millis() - startMs < 8000) {
+    unsigned long lastDataMs = millis();
+    while (millis() - startMs < 10000) {
         int avail = stream->available();
         if (avail > 0) {
-            int toRead = min(avail, len - received);
-            received += stream->readBytes(buf + received, toRead);
+            size_t toRead = (size_t)avail;
+            if (received + toRead > g_jpegScratchCap) toRead = g_jpegScratchCap - received;
+            if (toRead == 0) break; // buffer full
+            received += stream->readBytes(g_jpegScratch + received, toRead);
+            lastDataMs = millis();
+        } else if (!http.connected()) {
+            break; // server closed the connection, nothing left to read
+        } else if (millis() - lastDataMs > 2000) {
+            break; // no new data for a while - treat as end of response
         } else {
-            delay(10);
+            delay(5);
         }
     }
     http.end();
 
-    if (received != len) {
-        free(buf);
+    Serial.printf("[art] fetched %u bytes\n", (unsigned)received);
+
+    if (received == 0) {
         return false;
     }
 
@@ -88,9 +94,9 @@ static bool fetchAndDecodeArt(const char* thumbPath) {
 
     TJpgDec.setJpgScale(1);
     TJpgDec.setCallback(jpegOutputCallback);
-    bool ok = TJpgDec.drawJpg(0, 0, buf, len) == JDR_OK;
+    bool ok = TJpgDec.drawJpg(0, 0, g_jpegScratch, received) == JDR_OK;
+    if (!ok) Serial.println("[art] JPEG decode failed");
 
-    free(buf);
     g_decodeTarget = nullptr;
 
     return ok;
@@ -118,13 +124,20 @@ static void networkTaskFn(void* param) {
 
     WiFi.mode(WIFI_STA);
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    Serial.printf("[net] connecting to WiFi \"%s\"...\n", WIFI_SSID);
 
     int consecutiveFailures = 0;
+    bool loggedConnected = false;
 
     for (;;) {
         if (WiFi.status() != WL_CONNECTED) {
+            loggedConnected = false;
             vTaskDelay(pdMS_TO_TICKS(2000));
             continue;
+        }
+        if (!loggedConnected) {
+            Serial.printf("[net] WiFi connected, IP %s\n", WiFi.localIP().toString().c_str());
+            loggedConnected = true;
         }
 
         Session sessions[MAX_SESSIONS];
@@ -133,6 +146,7 @@ static void networkTaskFn(void* param) {
 
         if (result == FetchResult::NETWORK_ERROR) {
             consecutiveFailures++;
+            Serial.printf("[net] Plex poll failed (%d consecutive)\n", consecutiveFailures);
             if (consecutiveFailures >= 2) {
                 publishState(DisplayMode::ERROR_SCREEN, nullptr, 0, false);
             }
@@ -141,6 +155,7 @@ static void networkTaskFn(void* param) {
         }
 
         consecutiveFailures = 0;
+        Serial.printf("[net] poll ok, %d session(s)\n", count);
 
         if (count == 0) {
             g_lastThumbPath[0] = '\0';
@@ -148,6 +163,7 @@ static void networkTaskFn(void* param) {
         } else if (count == 1) {
             bool artValid = false;
             if (strcmp(sessions[0].thumbPath, g_lastThumbPath) != 0) {
+                Serial.printf("[art] thumb changed, fetching: %s\n", sessions[0].thumbPath);
                 if (fetchAndDecodeArt(sessions[0].thumbPath)) {
                     strlcpy(g_lastThumbPath, sessions[0].thumbPath, sizeof(g_lastThumbPath));
                     artValid = true;
@@ -174,11 +190,21 @@ void networkTaskStart() {
         g_artBufH = 240;
         g_artBuffer = (uint16_t*)heap_caps_malloc(
             (size_t)g_artBufW * g_artBufH * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
+        g_jpegScratchCap = 100000; // PSRAM is plentiful, generous headroom for the compressed JPEG
+        g_jpegScratch = (uint8_t*)heap_caps_malloc(g_jpegScratchCap, MALLOC_CAP_SPIRAM);
     } else {
         g_artBufW = 200;
         g_artBufH = 150;
         g_artBuffer = (uint16_t*)malloc((size_t)g_artBufW * g_artBufH * sizeof(uint16_t));
+        // Internal RAM is scarce here; a 200x150 JPEG thumbnail rarely exceeds ~20KB, so 40KB
+        // is generous without competing much with WiFi/JSON parsing for the same heap.
+        g_jpegScratchCap = 40000;
+        g_jpegScratch = (uint8_t*)malloc(g_jpegScratchCap);
     }
+
+    Serial.printf("[net] PSRAM: %s, art buffer %dx%d, JPEG scratch %u bytes, free heap %u\n",
+                  hasPsram ? "yes" : "no", g_artBufW, g_artBufH, (unsigned)g_jpegScratchCap,
+                  (unsigned)ESP.getFreeHeap());
 
     xTaskCreatePinnedToCore(networkTaskFn, "networkTask", 8192, nullptr, 1, nullptr, 0);
 }

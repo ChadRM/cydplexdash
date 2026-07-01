@@ -108,9 +108,11 @@ FetchResult fetchSessions(Session* out, int maxSessions, int* count) {
 }
 
 String buildArtUrl(const char* thumbPath, int width, int height) {
-    String fullPath = String("http://") + PLEX_SERVER_IP + ":" + String(PLEX_SERVER_PORT) + thumbPath;
+    // The transcoder's "url" param wants the plain library-relative path (e.g.
+    // "/library/metadata/123/thumb/456"), resolved internally - passing a full http://host:port
+    // URL here 404s, since Plex treats that as an external image reference instead.
     String url = String("http://") + PLEX_SERVER_IP + ":" + String(PLEX_SERVER_PORT) +
                  "/photo/:/transcode?width=" + String(width) + "&height=" + String(height) +
-                 "&url=" + urlEncode(fullPath.c_str()) + "&X-Plex-Token=" + PLEX_TOKEN;
+                 "&url=" + urlEncode(thumbPath) + "&X-Plex-Token=" + PLEX_TOKEN;
     return url;
 }
