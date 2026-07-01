@@ -30,6 +30,10 @@
 
 #define LV_USE_TABLE 1
 
+/* lv_font_conv RLE-compresses glyph bitmaps by default; without this, LVGL can't decode
+ * the custom JetBrains Mono fonts (src/fonts/) and every label renders blank. */
+#define LV_USE_FONT_COMPRESSED 1
+
 #endif /* End of content */
 
 #endif /* LV_CONF_H */

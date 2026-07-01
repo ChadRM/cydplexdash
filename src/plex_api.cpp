@@ -250,6 +250,11 @@ String buildArtUrl(const char* thumbPath, int width, int height) {
     // The transcoder's "url" param wants the plain library-relative path (e.g.
     // "/library/metadata/123/thumb/456"), resolved internally - passing a full http://host:port
     // URL here 404s, since Plex treats that as an external image reference instead.
+    //
+    // Plex's aspect-fit behavior for width+height isn't a reliable "crop to exactly fill" (it
+    // doesn't clamp to the requested box - e.g. a 200x150 request can come back 200x300 for a
+    // portrait source). Rather than chase undocumented transcoder flags, we request a plain
+    // fit and center-crop it ourselves in fetchAndDecodeArt() using the JPEG's real dimensions.
     String url = String("http://") + PLEX_SERVER_IP + ":" + String(PLEX_SERVER_PORT) +
                  "/photo/:/transcode?width=" + String(width) + "&height=" + String(height) +
                  "&url=" + urlEncode(thumbPath) + "&X-Plex-Token=" + PLEX_TOKEN;

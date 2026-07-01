@@ -42,16 +42,34 @@ static size_t g_jpegScratchCap = 0;
 static uint16_t* g_decodeTarget = nullptr;
 static int g_decodeW = 0;
 static int g_decodeH = 0;
+// Tracks the actual painted bounds during decode, so we can log whether the delivered JPEG
+// really filled the requested WxH box (crop-to-fill) or left an unpainted region (letterbox).
+static int g_decodeMaxX = 0;
+static int g_decodeMaxY = 0;
 
 static bool jpegOutputCallback(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t* bitmap) {
     if (!g_decodeTarget) return false;
+    if (x + (int)w > g_decodeMaxX) g_decodeMaxX = x + w;
+    if (y + (int)h > g_decodeMaxY) g_decodeMaxY = y + h;
+
+    // x (and therefore dstX) can be negative when center-cropping a source wider than our
+    // buffer - clip the left edge here too, not just the right, or this writes out of bounds.
+    int srcXStart = 0;
+    int dstX = x;
+    int copyW = w;
+    if (dstX < 0) {
+        srcXStart = -dstX;
+        copyW += dstX;
+        dstX = 0;
+    }
+    if (dstX + copyW > g_decodeW) copyW = g_decodeW - dstX;
+    if (copyW <= 0) return true; // block falls entirely outside the buffer horizontally
+
     for (int row = 0; row < h; row++) {
         int py = y + row;
-        if (py < 0 || py >= g_decodeH || x >= g_decodeW) continue;
-        int copyW = w;
-        if (x + copyW > g_decodeW) copyW = g_decodeW - x;
-        if (copyW <= 0) continue;
-        memcpy(&g_decodeTarget[py * g_decodeW + x], &bitmap[row * w], copyW * sizeof(uint16_t));
+        if (py < 0 || py >= g_decodeH) continue;
+        memcpy(&g_decodeTarget[py * g_decodeW + dstX], &bitmap[row * w + srcXStart],
+               copyW * sizeof(uint16_t));
     }
     return true;
 }
@@ -104,15 +122,37 @@ static bool fetchAndDecodeArt(const char* thumbPath) {
 
     // Reused every time art changes; a stale frame may flash briefly mid-decode, which is an
     // acceptable tradeoff for not needing a second full-size buffer on a board with no PSRAM.
-    memset(g_artBuffer, 0, (size_t)g_artBufW * g_artBufH * sizeof(uint16_t));
+    // Filled with the UI's background color (0x1a1b26 in RGB565), not black, so any letterbox
+    // margin (source aspect narrower than our target box) blends with the theme.
+    static const uint16_t ART_BG_FILL = 0x18C4;
+    for (size_t i = 0; i < (size_t)g_artBufW * g_artBufH; i++) g_artBuffer[i] = ART_BG_FILL;
+
     g_decodeTarget = g_artBuffer;
     g_decodeW = g_artBufW;
     g_decodeH = g_artBufH;
+    g_decodeMaxX = 0;
+    g_decodeMaxY = 0;
+
+    // Plex's fit isn't clamped to our requested box (see buildArtUrl), so center-crop
+    // ourselves: find the JPEG's real size and draw at an offset that centers it over our
+    // buffer. Offsets can be negative when the source exceeds our box on that axis - the
+    // callback's existing bounds clipping then naturally crops the overflow.
+    uint16_t jpgW = 0, jpgH = 0;
+    int ox = 0, oy = 0;
+    if (TJpgDec.getJpgSize(&jpgW, &jpgH, g_jpegScratch, received) == JDR_OK && jpgW > 0 && jpgH > 0) {
+        ox = (g_decodeW - (int)jpgW) / 2;
+        oy = (g_decodeH - (int)jpgH) / 2;
+    }
 
     TJpgDec.setJpgScale(1);
     TJpgDec.setCallback(jpegOutputCallback);
-    bool ok = TJpgDec.drawJpg(0, 0, g_jpegScratch, received) == JDR_OK;
-    if (!ok) Serial.println("[art] JPEG decode failed");
+    bool ok = TJpgDec.drawJpg(ox, oy, g_jpegScratch, received) == JDR_OK;
+    if (!ok) {
+        Serial.println("[art] JPEG decode failed");
+    } else {
+        Serial.printf("[art] source %dx%d, drawn at (%d,%d), bounds %dx%d (box %dx%d)\n", jpgW,
+                      jpgH, ox, oy, g_decodeMaxX, g_decodeMaxY, g_decodeW, g_decodeH);
+    }
 
     g_decodeTarget = nullptr;
 
