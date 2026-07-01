@@ -1,21 +1,38 @@
 #include <Arduino.h>
-#include <Preferences.h>
+#include <SPI.h>
 #include <TFT_eSPI.h>
+#include <XPT2046_Touchscreen_TT.h>
 #include <lvgl.h>
 #include <time.h>
 
 #include "network_task.h"
 #include "ui.h"
 
-// Touch presses aren't registering on this unit at all (confirmed via a raw-read diagnostic
-// build) - disabled until the touch controller mismatch is resolved, so setup() doesn't hang
-// forever in tft.calibrateTouch() waiting for a press that never comes.
-#define ENABLE_TOUCH 0
-
 static const uint32_t SCREEN_W = 320;
 static const uint32_t SCREEN_H = 240;
 
 static TFT_eSPI tft;
+
+// Touch (XPT2046) is wired to its own dedicated SPI bus on this board, separate from the
+// display's - confirmed from the seller's reference firmware. Using a second SPIClass bound
+// to HSPI (the display uses the default VSPI-backed `SPI` object via TFT_eSPI) so both buses
+// run independently with no pin conflicts.
+static const int TOUCH_CS_PIN = 33;
+static const int TOUCH_IRQ_PIN = 36;
+static const int TOUCH_SCK_PIN = 25;
+static const int TOUCH_MISO_PIN = 39;
+static const int TOUCH_MOSI_PIN = 32;
+
+static SPIClass touchSPI(HSPI);
+static XPT2046_Touchscreen ts(TOUCH_CS_PIN, TOUCH_IRQ_PIN);
+
+// Raw ADC bounds for mapping touch coordinates to screen pixels, measured from this unit's
+// actual corner presses (observed range: x 289-3639, y 442-3777), with a small margin.
+// If dragging ever feels reversed on an axis, swap that axis's min/max below.
+static const int16_t TOUCH_RAW_X_MIN = 250;
+static const int16_t TOUCH_RAW_X_MAX = 3700;
+static const int16_t TOUCH_RAW_Y_MIN = 400;
+static const int16_t TOUCH_RAW_Y_MAX = 3820;
 
 static lv_disp_draw_buf_t drawBuf;
 static lv_color_t lvBuf1[SCREEN_W * 20]; // partial buffer (20 rows); no PSRAM needed
@@ -33,35 +50,27 @@ static void dispFlush(lv_disp_drv_t* drv, const lv_area_t* area, lv_color_t* col
 }
 
 static void touchpadRead(lv_indev_drv_t* indev, lv_indev_data_t* data) {
-    uint16_t tx, ty;
-    if (tft.getTouch(&tx, &ty)) {
-        data->state = LV_INDEV_STATE_PRESSED;
-        data->point.x = tx;
-        data->point.y = ty;
-    } else {
+    if (!ts.touched()) {
         data->state = LV_INDEV_STATE_RELEASED;
-    }
-}
-
-// Resistive touch needs per-unit calibration (the raw ADC range varies panel to panel).
-// Calibrate once and persist the result to flash, so this only runs on the very first boot.
-static void initTouch() {
-    Preferences prefs;
-    prefs.begin("touchcal", false);
-
-    uint16_t calData[5];
-    size_t len = prefs.getBytes("caldata", calData, sizeof(calData));
-    if (len == sizeof(calData)) {
-        tft.setTouch(calData);
-        Serial.println("[touch] loaded saved calibration");
-    } else {
-        Serial.println("[touch] no calibration saved - follow the on-screen prompts, tap each crosshair");
-        tft.calibrateTouch(calData, TFT_WHITE, TFT_RED, 15);
-        prefs.putBytes("caldata", calData, sizeof(calData));
-        Serial.println("[touch] calibration complete and saved");
+        return;
     }
 
-    prefs.end();
+    TS_Point p = ts.getPoint();
+
+    static unsigned long lastLogMs = 0;
+    if (millis() - lastLogMs > 300) {
+        Serial.printf("[touch] raw x=%d y=%d z=%d\n", p.x, p.y, p.z);
+        lastLogMs = millis();
+    }
+
+    int32_t px = map(p.x, TOUCH_RAW_X_MIN, TOUCH_RAW_X_MAX, 0, SCREEN_W - 1);
+    int32_t py = map(p.y, TOUCH_RAW_Y_MIN, TOUCH_RAW_Y_MAX, 0, SCREEN_H - 1);
+    px = constrain(px, 0, (int32_t)SCREEN_W - 1);
+    py = constrain(py, 0, (int32_t)SCREEN_H - 1);
+
+    data->state = LV_INDEV_STATE_PRESSED;
+    data->point.x = px;
+    data->point.y = py;
 }
 
 void setup() {
@@ -70,10 +79,10 @@ void setup() {
     tft.init();
     tft.setRotation(1); // landscape, 320x240
     tft.fillScreen(TFT_BLACK);
-#if ENABLE_TOUCH
-    initTouch();
-    tft.fillScreen(TFT_BLACK); // calibrateTouch leaves its crosshairs on screen otherwise
-#endif
+
+    touchSPI.begin(TOUCH_SCK_PIN, TOUCH_MISO_PIN, TOUCH_MOSI_PIN, TOUCH_CS_PIN);
+    ts.begin(touchSPI);
+    ts.setRotation(1); // match the display's rotation
 
     lv_init();
     lv_disp_draw_buf_init(&drawBuf, lvBuf1, nullptr, SCREEN_W * 20);
@@ -86,13 +95,11 @@ void setup() {
     dispDrv.draw_buf = &drawBuf;
     lv_disp_drv_register(&dispDrv);
 
-#if ENABLE_TOUCH
     static lv_indev_drv_t indevDrv;
     lv_indev_drv_init(&indevDrv);
     indevDrv.type = LV_INDEV_TYPE_POINTER;
     indevDrv.read_cb = touchpadRead;
     lv_indev_drv_register(&indevDrv);
-#endif
 
     ui_init();
     networkTaskStart();
