@@ -7,15 +7,25 @@ It polls your local Plex Media Server and shows:
 - **Nobody streaming** - an idle screen.
 - **One active session** - full-screen cover art with a title/artist/progress overlay.
 - **Multiple active sessions** - a dark-themed table, one row per user (who's watching what).
+  Drag on the table to scroll if there are more sessions than fit on screen.
 - **Plex server unreachable** - a red warning screen, until it recovers.
 
-The server's name is always shown in a thin bar across the top of every screen.
+Every screen has the server's name in a bar across the top-left, and a live clock
+(12-hour, e.g. `9:05pm`) in the top-right, synced over NTP.
+
+The screen goes dark (backlight off) after 5 minutes of nothing playing, or during
+configurable night hours (10pm-8am by default) - whichever applies first.
 
 ## Hardware
 
-- Board: ESP32-2432S028R (ILI9341 SPI display, resistive touch not used by this project).
+- Board: ESP32-2432S028R (ILI9341 SPI display + XPT2046 resistive touch).
 - Display pins (fixed via `platformio.ini` build flags, no wiring needed): standard for
   this exact board - MOSI 13, MISO 12, SCLK 14, CS 15, DC 2, BL 21.
+- Touch pins: this board wires the XPT2046 touch controller to its **own dedicated SPI
+  bus**, separate from the display - MOSI 32, MISO 39, SCK 25, CS 33, IRQ 36 (confirmed
+  from the seller's reference firmware; this differs from most CYD guides, which assume a
+  shared bus). The firmware runs touch on the ESP32's second hardware SPI peripheral
+  (HSPI) so it doesn't interfere with the display's bus.
 - If colors look inverted on your board batch, see the comment in `platformio.ini` about
   switching `ILI9341_DRIVER` to `ILI9341_2_DRIVER`.
 
@@ -46,6 +56,15 @@ The server's name is always shown in a thin bar across the top of every screen.
    #define PLEX_SERVER_NAME "MyPlexServer" // shown in the top bar on every screen
 
    #define PLEX_TOKEN "your-plex-token-here"
+
+   // NTP time sync (powers the on-screen clock and the night-mode schedule below)
+   #define NTP_SERVER "pool.ntp.org"
+   #define GMT_OFFSET_SEC (-5 * 3600) // your UTC offset in seconds, standard time
+   #define DAYLIGHT_OFFSET_SEC 3600   // 1 hour DST offset, or 0 if your area doesn't observe DST
+
+   // Screen goes dark during these local hours (0-23, wraps past midnight fine)
+   #define NIGHT_MODE_START_HOUR 22 // 10:00 PM
+   #define NIGHT_MODE_END_HOUR 8    // 8:00 AM
    ```
 
    `secrets.h` is gitignored - it never gets committed.
@@ -71,7 +90,16 @@ The server's name is always shown in a thin bar across the top of every screen.
    ```
 
    You should see WiFi connect, then periodic Plex poll results and (when something's
-   playing) art fetch logs.
+   playing) art fetch logs. Touch presses log their raw coordinates too
+   (`[touch] raw x=... y=...`), useful if you ever need to re-tune the calibration bounds.
+
+## Touch calibration
+
+The raw ADC-to-pixel mapping is set from one unit's actual corner-press readings
+(`TOUCH_RAW_X_MIN/MAX`, `TOUCH_RAW_Y_MIN/MAX` in `src/main.cpp`). If your panel's range
+differs enough that dragging feels off, watch the serial log while pressing each corner and
+adjust those constants; if scrolling ever feels reversed on an axis, swap that axis's min
+and max.
 
 ## Notes
 
@@ -80,4 +108,4 @@ The server's name is always shown in a thin bar across the top of every screen.
 - Polling interval is 3 seconds; the Plex server error screen appears after 2 consecutive
   failed polls (~6s) to avoid flickering on a single transient blip.
 - Uses both ESP32 cores: core 0 handles WiFi/Plex polling and JPEG decode, core 1 runs the
-  LVGL UI loop.
+  LVGL UI loop and touch input.
