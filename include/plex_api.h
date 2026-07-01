@@ -3,6 +3,7 @@
 #include <Arduino.h>
 
 #define MAX_SESSIONS 8
+#define MAX_RECENT_VIEWS 2
 
 enum class PlayState : uint8_t {
     PLAYING,
@@ -33,3 +34,14 @@ FetchResult fetchSessions(Session* out, int maxSessions, int* count);
 
 // Builds a Plex photo-transcode URL that resizes the given session's art to width x height.
 String buildArtUrl(const char* thumbPath, int width, int height);
+
+struct RecentView {
+    char username[32];
+    char title[64];
+    char subtitle[80];
+};
+
+// Fetches the most recent watch history, collapsed to one entry per distinct user (most
+// recent view first), up to `maxViews`. This is historical/informational, not live playback
+// state - there's no progress/duration here, just who watched what most recently.
+FetchResult fetchRecentViews(RecentView* out, int maxViews, int* count);

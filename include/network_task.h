@@ -21,6 +21,11 @@ struct SharedState {
     int artHeight;
     bool artValid;
 
+    // Only meaningful when mode == IDLE. Historical/informational, refreshed occasionally
+    // rather than every poll - see fetchRecentViews().
+    RecentView recentViews[MAX_RECENT_VIEWS];
+    int recentViewCount;
+
     // True when the display should be dark: nothing has played for 5+ minutes, or it's
     // currently within the configured night-mode hours.
     bool screensaverActive;

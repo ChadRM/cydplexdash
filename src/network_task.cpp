@@ -119,6 +119,9 @@ static bool fetchAndDecodeArt(const char* thumbPath) {
     return ok;
 }
 
+static RecentView g_cachedRecentViews[MAX_RECENT_VIEWS];
+static int g_cachedRecentViewCount = 0;
+
 static void publishState(DisplayMode mode, const Session* sessions, int count, bool artValid,
                           bool screensaverActive) {
     xSemaphoreTake(g_mutex, portMAX_DELAY);
@@ -132,6 +135,12 @@ static void publishState(DisplayMode mode, const Session* sessions, int count, b
         g_state.artValid = true;
     } else {
         g_state.artValid = false;
+    }
+    if (mode == DisplayMode::IDLE) {
+        g_state.recentViewCount = g_cachedRecentViewCount;
+        for (int i = 0; i < g_cachedRecentViewCount; i++) g_state.recentViews[i] = g_cachedRecentViews[i];
+    } else {
+        g_state.recentViewCount = 0;
     }
     g_state.screensaverActive = screensaverActive;
     xSemaphoreGive(g_mutex);
@@ -148,6 +157,11 @@ static void networkTaskFn(void* param) {
     int consecutiveFailures = 0;
     bool loggedConnected = false;
     unsigned long lastActiveMs = millis(); // "something playing" timer, for the idle screensaver
+    // Sentinel "not yet published" value (never actually set by the branches below) so the
+    // very first idle observation after boot correctly counts as "just became idle".
+    DisplayMode lastMode = DisplayMode::ERROR_SCREEN;
+    unsigned long lastRecentViewsFetchMs = 0;
+    static const unsigned long RECENT_VIEWS_REFRESH_MS = 60UL * 1000UL; // it's informational, not live
 
     for (;;) {
         if (WiFi.status() != WL_CONNECTED) {
@@ -190,7 +204,23 @@ static void networkTaskFn(void* param) {
 
         if (count == 0) {
             g_lastThumbPath[0] = '\0';
+
+            // Recent-views is informational, not live - only (re)fetch it when we just became
+            // idle, or every minute or so while remaining idle, not on every 3s poll.
+            bool justBecameIdle = (lastMode != DisplayMode::IDLE);
+            if (justBecameIdle || (millis() - lastRecentViewsFetchMs > RECENT_VIEWS_REFRESH_MS)) {
+                RecentView views[MAX_RECENT_VIEWS];
+                int rvCount = 0;
+                if (fetchRecentViews(views, MAX_RECENT_VIEWS, &rvCount) == FetchResult::OK) {
+                    g_cachedRecentViewCount = rvCount;
+                    for (int i = 0; i < rvCount; i++) g_cachedRecentViews[i] = views[i];
+                    Serial.printf("[net] recent views refreshed, %d found\n", rvCount);
+                }
+                lastRecentViewsFetchMs = millis();
+            }
+
             publishState(DisplayMode::IDLE, sessions, 0, false, screensaverActive);
+            lastMode = DisplayMode::IDLE;
         } else if (count == 1) {
             lastActiveMs = millis();
             bool artValid = false;
@@ -204,10 +234,12 @@ static void networkTaskFn(void* param) {
                 artValid = true; // unchanged art, buffer already holds the right pixels
             }
             publishState(DisplayMode::SINGLE, sessions, 1, artValid, screensaverActive);
+            lastMode = DisplayMode::SINGLE;
         } else {
             lastActiveMs = millis();
             g_lastThumbPath[0] = '\0';
             publishState(DisplayMode::TABLE, sessions, count, false, screensaverActive);
+            lastMode = DisplayMode::TABLE;
         }
 
         vTaskDelay(pdMS_TO_TICKS(3000));

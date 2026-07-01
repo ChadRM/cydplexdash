@@ -37,6 +37,16 @@ static const int16_t TOUCH_RAW_Y_MAX = 3820;
 static lv_disp_draw_buf_t drawBuf;
 static lv_color_t lvBuf1[SCREEN_W * 20]; // partial buffer (20 rows); no PSRAM needed
 
+// Wake-on-tap: a touch while the screen is dark (idle-timeout or night-mode) forces the
+// backlight on for 5 minutes, independent of the underlying idle/night condition.
+static const unsigned long WAKE_WINDOW_MS = 5UL * 60UL * 1000UL;
+static bool g_lastScreensaverActive = false;
+static unsigned long g_wakeUntilMs = 0;
+
+static bool isEffectivelyDark() {
+    return g_lastScreensaverActive && (millis() >= g_wakeUntilMs);
+}
+
 static void dispFlush(lv_disp_drv_t* drv, const lv_area_t* area, lv_color_t* color_p) {
     uint32_t w = area->x2 - area->x1 + 1;
     uint32_t h = area->y2 - area->y1 + 1;
@@ -53,6 +63,11 @@ static void touchpadRead(lv_indev_drv_t* indev, lv_indev_data_t* data) {
     if (!ts.touched()) {
         data->state = LV_INDEV_STATE_RELEASED;
         return;
+    }
+
+    if (isEffectivelyDark()) {
+        g_wakeUntilMs = millis() + WAKE_WINDOW_MS;
+        Serial.println("[touch] wake tap - backlight on for 5 minutes");
     }
 
     TS_Point p = ts.getPoint();
@@ -135,11 +150,13 @@ void loop() {
     if (networkTaskPollUpdate(&state)) {
         const uint16_t* art = state.artValid ? state.artBuffer : nullptr;
         ui_update(state.mode, state.sessions, state.sessionCount, art, state.artWidth,
-                  state.artHeight);
-        // TFT_BACKLIGHT_ON reflects the "on" level from platformio.ini; invert it when the
-        // screensaver (idle timeout or night-mode hours) should keep the display dark.
-        digitalWrite(TFT_BL, state.screensaverActive ? !TFT_BACKLIGHT_ON : TFT_BACKLIGHT_ON);
+                  state.artHeight, state.recentViews, state.recentViewCount);
+        g_lastScreensaverActive = state.screensaverActive;
     }
+
+    // TFT_BACKLIGHT_ON reflects the "on" level from platformio.ini; invert it when the screen
+    // should be dark (idle-timeout or night-mode), unless a wake-on-tap window is active.
+    digitalWrite(TFT_BL, isEffectivelyDark() ? !TFT_BACKLIGHT_ON : TFT_BACKLIGHT_ON);
 
     delay(5);
 }

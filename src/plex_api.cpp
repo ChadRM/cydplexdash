@@ -107,6 +107,145 @@ FetchResult fetchSessions(Session* out, int maxSessions, int* count) {
     return FetchResult::OK;
 }
 
+struct HistoryEntry {
+    int accountID;
+    char title[64];
+    char subtitle[80];
+};
+
+static const int HISTORY_FETCH_SIZE = 20; // enough to usually find 2 distinct recent users
+
+FetchResult fetchRecentViews(RecentView* out, int maxViews, int* count) {
+    *count = 0;
+
+    // 1. Fetch recent watch history, most recent first.
+    String historyUrl = String("http://") + PLEX_SERVER_IP + ":" + String(PLEX_SERVER_PORT) +
+                         "/status/sessions/history/all?sort=viewedAt:desc&X-Plex-Container-Start=0"
+                         "&X-Plex-Container-Size=" +
+                         String(HISTORY_FETCH_SIZE) + "&X-Plex-Token=" + PLEX_TOKEN;
+
+    HTTPClient http;
+    http.begin(historyUrl);
+    http.addHeader("Accept", "application/json");
+    http.setConnectTimeout(3000);
+    http.setTimeout(3000);
+
+    int httpCode = http.GET();
+    if (httpCode != HTTP_CODE_OK) {
+        http.end();
+        return FetchResult::NETWORK_ERROR;
+    }
+
+    JsonDocument filter;
+    JsonObject item = filter["MediaContainer"]["Metadata"].add<JsonObject>();
+    item["accountID"] = true;
+    item["title"] = true;
+    item["grandparentTitle"] = true;
+    item["parentTitle"] = true;
+
+    JsonDocument doc;
+    DeserializationError err =
+        deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
+    http.end();
+
+    if (err) {
+        return FetchResult::NETWORK_ERROR;
+    }
+
+    // Collapse to one entry per distinct account, in most-recent-first order.
+    HistoryEntry entries[MAX_RECENT_VIEWS];
+    int n = 0;
+    JsonArray metadata = doc["MediaContainer"]["Metadata"].as<JsonArray>();
+    for (JsonObject entry : metadata) {
+        if (n >= maxViews) break;
+
+        int accountID = entry["accountID"] | -1;
+        if (accountID < 0) continue;
+
+        bool alreadySeen = false;
+        for (int i = 0; i < n; i++) {
+            if (entries[i].accountID == accountID) {
+                alreadySeen = true;
+                break;
+            }
+        }
+        if (alreadySeen) continue;
+
+        HistoryEntry& h = entries[n];
+        h.accountID = accountID;
+
+        const char* title = entry["title"] | "";
+        strlcpy(h.title, title, sizeof(h.title));
+
+        h.subtitle[0] = '\0';
+        const char* grandparent = entry["grandparentTitle"] | "";
+        const char* parent = entry["parentTitle"] | "";
+        if (grandparent[0] && parent[0]) {
+            snprintf(h.subtitle, sizeof(h.subtitle), "%s - %s", grandparent, parent);
+        } else if (grandparent[0]) {
+            strlcpy(h.subtitle, grandparent, sizeof(h.subtitle));
+        } else if (parent[0]) {
+            strlcpy(h.subtitle, parent, sizeof(h.subtitle));
+        }
+
+        n++;
+    }
+
+    if (n == 0) {
+        *count = 0;
+        return FetchResult::OK;
+    }
+
+    // 2. Resolve accountID -> username. Best-effort: if this call fails, still return the
+    // titles/subtitles we already have, just with "Unknown" in place of a name.
+    String acctUrl = String("http://") + PLEX_SERVER_IP + ":" + String(PLEX_SERVER_PORT) +
+                      "/accounts?X-Plex-Token=" + PLEX_TOKEN;
+
+    HTTPClient acctHttp;
+    acctHttp.begin(acctUrl);
+    acctHttp.addHeader("Accept", "application/json");
+    acctHttp.setConnectTimeout(3000);
+    acctHttp.setTimeout(3000);
+
+    int acctCode = acctHttp.GET();
+    JsonDocument acctDoc;
+    bool haveAccounts = false;
+    if (acctCode == HTTP_CODE_OK) {
+        JsonDocument acctFilter;
+        JsonObject acctItem = acctFilter["MediaContainer"]["Account"].add<JsonObject>();
+        acctItem["id"] = true;
+        acctItem["name"] = true;
+
+        DeserializationError acctErr = deserializeJson(acctDoc, acctHttp.getStream(),
+                                                        DeserializationOption::Filter(acctFilter));
+        haveAccounts = !acctErr;
+    }
+    acctHttp.end();
+
+    for (int i = 0; i < n; i++) {
+        RecentView& v = out[i];
+        memset(&v, 0, sizeof(RecentView));
+        strlcpy(v.title, entries[i].title, sizeof(v.title));
+        strlcpy(v.subtitle, entries[i].subtitle, sizeof(v.subtitle));
+        strlcpy(v.username, "Unknown", sizeof(v.username));
+
+        if (haveAccounts) {
+            JsonArray accounts = acctDoc["MediaContainer"]["Account"].as<JsonArray>();
+            for (JsonObject acct : accounts) {
+                int id = acct["id"] | -1;
+                if (id == entries[i].accountID) {
+                    const char* name = acct["name"] | "Unknown";
+                    strlcpy(v.username, name, sizeof(v.username));
+                    break;
+                }
+            }
+        }
+    }
+
+    *count = n;
+    return FetchResult::OK;
+}
+
 String buildArtUrl(const char* thumbPath, int width, int height) {
     // The transcoder's "url" param wants the plain library-relative path (e.g.
     // "/library/metadata/123/thumb/456"), resolved internally - passing a full http://host:port

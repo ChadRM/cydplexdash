@@ -19,6 +19,8 @@ static lv_obj_t* s_stateLabel;
 static lv_obj_t* s_progressBar;
 static lv_obj_t* s_timeLabel;
 static lv_obj_t* s_clockLabel;
+static lv_obj_t* s_recentHeaderLabel;
+static lv_obj_t* s_recentLabel[MAX_RECENT_VIEWS];
 
 static lv_img_dsc_t s_artDsc;
 
@@ -91,10 +93,25 @@ void ui_init() {
     lv_obj_clear_flag(s_idleView, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t* idleLabel = lv_label_create(s_idleView);
-    lv_label_set_text(idleLabel, "Nothing Playing");
+    lv_label_set_text(idleLabel, "Nothing Playing Now");
     lv_obj_set_style_text_font(idleLabel, &lv_font_montserrat_24, 0);
     lv_obj_set_style_text_color(idleLabel, lv_color_white(), 0);
-    lv_obj_center(idleLabel);
+    lv_obj_align(idleLabel, LV_ALIGN_TOP_MID, 0, 50);
+
+    s_recentHeaderLabel = lv_label_create(s_idleView);
+    lv_obj_set_style_text_font(s_recentHeaderLabel, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(s_recentHeaderLabel, lv_color_hex(0x999999), 0);
+    lv_obj_align(s_recentHeaderLabel, LV_ALIGN_TOP_MID, 0, 110);
+
+    for (int i = 0; i < MAX_RECENT_VIEWS; i++) {
+        s_recentLabel[i] = lv_label_create(s_idleView);
+        lv_obj_set_style_text_font(s_recentLabel[i], &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_color(s_recentLabel[i], lv_color_white(), 0);
+        lv_label_set_long_mode(s_recentLabel[i], LV_LABEL_LONG_DOT);
+        lv_obj_set_width(s_recentLabel[i], 300);
+        lv_obj_set_style_text_align(s_recentLabel[i], LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_align(s_recentLabel[i], LV_ALIGN_TOP_MID, 0, 136 + i * 26);
+    }
 
     // --- Single-session view (full/centered art + overlay text panel) ---
     s_singleView = lv_obj_create(scr);
@@ -236,6 +253,25 @@ static void updateSingleView(const Session& s, const uint16_t* artBuffer, int ar
     lv_label_set_text(s_timeLabel, timeBuf);
 }
 
+static void updateIdleView(const RecentView* recentViews, int recentViewCount) {
+    lv_label_set_text(s_recentHeaderLabel, recentViewCount > 0 ? "Recently watched:" : "");
+
+    for (int i = 0; i < MAX_RECENT_VIEWS; i++) {
+        if (i >= recentViewCount) {
+            lv_label_set_text(s_recentLabel[i], "");
+            continue;
+        }
+        const RecentView& v = recentViews[i];
+        char combined[140];
+        if (v.subtitle[0]) {
+            snprintf(combined, sizeof(combined), "%s: %s (%s)", v.username, v.title, v.subtitle);
+        } else {
+            snprintf(combined, sizeof(combined), "%s: %s", v.username, v.title);
+        }
+        lv_label_set_text(s_recentLabel[i], combined);
+    }
+}
+
 static void updateTableView(const Session* sessions, int count) {
     lv_table_set_row_cnt(s_tableView, count + 1);
     lv_table_set_cell_value(s_tableView, 0, 0, "User");
@@ -258,7 +294,7 @@ static void updateTableView(const Session* sessions, int count) {
 }
 
 void ui_update(DisplayMode mode, const Session* sessions, int count, const uint16_t* artBuffer,
-               int artWidth, int artHeight) {
+               int artWidth, int artHeight, const RecentView* recentViews, int recentViewCount) {
     hideAllViews();
 
     switch (mode) {
@@ -267,6 +303,7 @@ void ui_update(DisplayMode mode, const Session* sessions, int count, const uint1
             break;
         case DisplayMode::IDLE:
             lv_obj_clear_flag(s_idleView, LV_OBJ_FLAG_HIDDEN);
+            updateIdleView(recentViews, recentViewCount);
             break;
         case DisplayMode::SINGLE:
             lv_obj_clear_flag(s_singleView, LV_OBJ_FLAG_HIDDEN);
