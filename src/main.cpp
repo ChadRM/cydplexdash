@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <TFT_eSPI.h>
 #include <lvgl.h>
+#include <time.h>
 
 #include "network_task.h"
 #include "ui.h"
@@ -47,15 +48,40 @@ void setup() {
     networkTaskStart();
 }
 
+static void updateClock() {
+    static unsigned long lastUpdateMs = 0;
+    unsigned long now = millis();
+    if (now - lastUpdateMs < 1000) return;
+    lastUpdateMs = now;
+
+    time_t nowSec = time(nullptr);
+    char buf[12];
+    if (nowSec > 1600000000) { // NTP has synced at least once (see network_task.cpp)
+        struct tm timeinfo;
+        localtime_r(&nowSec, &timeinfo);
+        int hour12 = timeinfo.tm_hour % 12;
+        if (hour12 == 0) hour12 = 12;
+        const char* ampm = (timeinfo.tm_hour < 12) ? "am" : "pm";
+        snprintf(buf, sizeof(buf), "%d:%02d%s", hour12, timeinfo.tm_min, ampm);
+    } else {
+        strlcpy(buf, "--:--", sizeof(buf));
+    }
+    ui_set_clock(buf);
+}
+
 void loop() {
     lv_timer_handler();
     lv_tick_inc(5);
+    updateClock();
 
     SharedState state;
     if (networkTaskPollUpdate(&state)) {
         const uint16_t* art = state.artValid ? state.artBuffer : nullptr;
         ui_update(state.mode, state.sessions, state.sessionCount, art, state.artWidth,
                   state.artHeight);
+        // TFT_BACKLIGHT_ON reflects the "on" level from platformio.ini; invert it when the
+        // screensaver (idle timeout or night-mode hours) should keep the display dark.
+        digitalWrite(TFT_BL, state.screensaverActive ? !TFT_BACKLIGHT_ON : TFT_BACKLIGHT_ON);
     }
 
     delay(5);

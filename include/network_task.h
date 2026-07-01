@@ -20,6 +20,10 @@ struct SharedState {
     int artWidth;
     int artHeight;
     bool artValid;
+
+    // True when the display should be dark: nothing has played for 5+ minutes, or it's
+    // currently within the configured night-mode hours.
+    bool screensaverActive;
 };
 
 // Starts the background FreeRTOS task pinned to core 0 (WiFi, Plex polling, JPEG decode).

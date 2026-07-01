@@ -18,6 +18,7 @@ static lv_obj_t* s_subtitleLabel;
 static lv_obj_t* s_stateLabel;
 static lv_obj_t* s_progressBar;
 static lv_obj_t* s_timeLabel;
+static lv_obj_t* s_clockLabel;
 
 static lv_img_dsc_t s_artDsc;
 
@@ -191,6 +192,12 @@ void ui_init() {
     lv_obj_set_style_text_color(serverLabel, lv_color_white(), 0);
     lv_obj_align(serverLabel, LV_ALIGN_LEFT_MID, 2, 0);
 
+    s_clockLabel = lv_label_create(topBar);
+    lv_label_set_text(s_clockLabel, "--:--");
+    lv_obj_set_style_text_font(s_clockLabel, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(s_clockLabel, lv_color_white(), 0);
+    lv_obj_align(s_clockLabel, LV_ALIGN_RIGHT_MID, -2, 0);
+
     lv_obj_move_foreground(topBar); // always on top, regardless of which view is active
 
     hideAllViews();
@@ -270,4 +277,9 @@ void ui_update(DisplayMode mode, const Session* sessions, int count, const uint1
             updateTableView(sessions, count);
             break;
     }
+}
+
+void ui_set_clock(const char* text) {
+    lv_label_set_text(s_clockLabel, text);
+    lv_obj_align(s_clockLabel, LV_ALIGN_RIGHT_MID, -2, 0);
 }

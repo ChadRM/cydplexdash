@@ -4,8 +4,25 @@
 #include <TJpg_Decoder.h>
 #include <WiFi.h>
 #include <esp_heap_caps.h>
+#include <time.h>
 
 #include "secrets.h"
+
+static const unsigned long IDLE_SCREENSAVER_MS = 5UL * 60UL * 1000UL; // 5 minutes
+
+// Unsynced ESP32 clocks read as far in the past (near epoch 0), so treat anything past this
+// (~Sept 2020) as "NTP has synced at least once".
+static bool isTimeSynced() {
+    return time(nullptr) > 1600000000;
+}
+
+static bool isNightHours(int hour) {
+    int start = NIGHT_MODE_START_HOUR;
+    int end = NIGHT_MODE_END_HOUR;
+    if (start == end) return false; // degenerate config - treat as always off
+    if (start < end) return hour >= start && hour < end;
+    return hour >= start || hour < end; // range wraps past midnight, e.g. 22 -> 8
+}
 
 static SemaphoreHandle_t g_mutex;
 static SharedState g_state = {};
@@ -102,7 +119,8 @@ static bool fetchAndDecodeArt(const char* thumbPath) {
     return ok;
 }
 
-static void publishState(DisplayMode mode, const Session* sessions, int count, bool artValid) {
+static void publishState(DisplayMode mode, const Session* sessions, int count, bool artValid,
+                          bool screensaverActive) {
     xSemaphoreTake(g_mutex, portMAX_DELAY);
     g_state.mode = mode;
     g_state.sessionCount = count;
@@ -115,6 +133,7 @@ static void publishState(DisplayMode mode, const Session* sessions, int count, b
     } else {
         g_state.artValid = false;
     }
+    g_state.screensaverActive = screensaverActive;
     xSemaphoreGive(g_mutex);
     g_dirty = true;
 }
@@ -128,6 +147,7 @@ static void networkTaskFn(void* param) {
 
     int consecutiveFailures = 0;
     bool loggedConnected = false;
+    unsigned long lastActiveMs = millis(); // "something playing" timer, for the idle screensaver
 
     for (;;) {
         if (WiFi.status() != WL_CONNECTED) {
@@ -137,8 +157,19 @@ static void networkTaskFn(void* param) {
         }
         if (!loggedConnected) {
             Serial.printf("[net] WiFi connected, IP %s\n", WiFi.localIP().toString().c_str());
+            configTime(GMT_OFFSET_SEC, DAYLIGHT_OFFSET_SEC, NTP_SERVER);
             loggedConnected = true;
         }
+
+        bool nightNow = false;
+        if (isTimeSynced()) {
+            time_t now = time(nullptr);
+            struct tm timeinfo;
+            localtime_r(&now, &timeinfo);
+            nightNow = isNightHours(timeinfo.tm_hour);
+        }
+        bool idleTooLong = (millis() - lastActiveMs) >= IDLE_SCREENSAVER_MS;
+        bool screensaverActive = nightNow || idleTooLong;
 
         Session sessions[MAX_SESSIONS];
         int count = 0;
@@ -148,7 +179,7 @@ static void networkTaskFn(void* param) {
             consecutiveFailures++;
             Serial.printf("[net] Plex poll failed (%d consecutive)\n", consecutiveFailures);
             if (consecutiveFailures >= 2) {
-                publishState(DisplayMode::ERROR_SCREEN, nullptr, 0, false);
+                publishState(DisplayMode::ERROR_SCREEN, nullptr, 0, false, screensaverActive);
             }
             vTaskDelay(pdMS_TO_TICKS(3000));
             continue;
@@ -159,8 +190,9 @@ static void networkTaskFn(void* param) {
 
         if (count == 0) {
             g_lastThumbPath[0] = '\0';
-            publishState(DisplayMode::IDLE, sessions, 0, false);
+            publishState(DisplayMode::IDLE, sessions, 0, false, screensaverActive);
         } else if (count == 1) {
+            lastActiveMs = millis();
             bool artValid = false;
             if (strcmp(sessions[0].thumbPath, g_lastThumbPath) != 0) {
                 Serial.printf("[art] thumb changed, fetching: %s\n", sessions[0].thumbPath);
@@ -171,10 +203,11 @@ static void networkTaskFn(void* param) {
             } else {
                 artValid = true; // unchanged art, buffer already holds the right pixels
             }
-            publishState(DisplayMode::SINGLE, sessions, 1, artValid);
+            publishState(DisplayMode::SINGLE, sessions, 1, artValid, screensaverActive);
         } else {
+            lastActiveMs = millis();
             g_lastThumbPath[0] = '\0';
-            publishState(DisplayMode::TABLE, sessions, count, false);
+            publishState(DisplayMode::TABLE, sessions, count, false, screensaverActive);
         }
 
         vTaskDelay(pdMS_TO_TICKS(3000));
