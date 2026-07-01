@@ -49,6 +49,16 @@ static const char* stateToString(PlayState state) {
     }
 }
 
+// Icon-glyph form of stateToString(), for the table view's narrow Status column.
+static const char* stateToIcon(PlayState state) {
+    switch (state) {
+        case PlayState::PAUSED: return LV_SYMBOL_PAUSE;
+        case PlayState::BUFFERING: return STATUS_ICON_BUFFERING;
+        case PlayState::PLAYING: return LV_SYMBOL_PLAY;
+        default: return "";
+    }
+}
+
 static lv_color_t stateColor(PlayState state) {
     switch (state) {
         case PlayState::PLAYING: return lv_color_hex(COLOR_GREEN);
@@ -86,6 +96,8 @@ static void tableDrawPartEventCb(lv_event_t* e) {
         dsc->label_dsc->color = lv_color_hex(COLOR_PURPLE);
     } else if (col == 2 && (row - 1) < MAX_SESSIONS) {
         dsc->label_dsc->color = stateColor(s_tableRowState[row - 1]);
+        dsc->label_dsc->font = &status_icons_14;
+        dsc->label_dsc->align = LV_TEXT_ALIGN_CENTER;
     }
 }
 
@@ -222,8 +234,8 @@ void ui_init() {
     lv_obj_set_pos(s_tableView, 0, TOP_BAR_H);
     lv_table_set_col_cnt(s_tableView, 3);
     lv_table_set_col_width(s_tableView, 0, 70);
-    lv_table_set_col_width(s_tableView, 1, 170);
-    lv_table_set_col_width(s_tableView, 2, 80);
+    lv_table_set_col_width(s_tableView, 1, 216);
+    lv_table_set_col_width(s_tableView, 2, 34);
     lv_obj_set_style_text_font(s_tableView, &jetbrains_mono_14, 0);
 
     // Dark theme: LVGL's default table style is light-mode (white cells/black text/gray border).
@@ -321,7 +333,7 @@ static void updateTableView(const Session* sessions, int count) {
     lv_table_set_row_cnt(s_tableView, count + 1);
     lv_table_set_cell_value(s_tableView, 0, 0, "User");
     lv_table_set_cell_value(s_tableView, 0, 1, "Watching");
-    lv_table_set_cell_value(s_tableView, 0, 2, "Status");
+    lv_table_set_cell_value(s_tableView, 0, 2, "");
 
     for (int i = 0; i < count; i++) {
         const Session& s = sessions[i];
@@ -334,7 +346,7 @@ static void updateTableView(const Session* sessions, int count) {
             snprintf(combined, sizeof(combined), "%s", s.title);
         }
         lv_table_set_cell_value(s_tableView, i + 1, 1, combined);
-        lv_table_set_cell_value(s_tableView, i + 1, 2, stateToString(s.state));
+        lv_table_set_cell_value(s_tableView, i + 1, 2, stateToIcon(s.state));
         s_tableRowState[i] = s.state;
     }
 }
