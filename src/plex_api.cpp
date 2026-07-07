@@ -2,6 +2,7 @@
 
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
+#include <WiFiClientSecure.h>
 
 #include "secrets.h"
 
@@ -28,19 +29,35 @@ static String urlEncode(const char* s) {
     return encoded;
 }
 
+int plexHttpGet(HTTPClient& http, const String& path, bool jsonAccept,
+                 unsigned long localTimeoutMs, unsigned long funnelTimeoutMs) {
+    String localUrl = String("http://") + PLEX_LOCAL_IP + ":" + String(PLEX_SERVER_PORT) + path;
+    http.begin(localUrl);
+    if (jsonAccept) http.addHeader("Accept", "application/json");
+    http.setConnectTimeout(localTimeoutMs);
+    http.setTimeout(localTimeoutMs);
+    int code = http.GET();
+    if (code == HTTP_CODE_OK) return code;
+    http.end();
+
+    String funnelUrl = String("https://") + PLEX_FUNNEL_HOST + path;
+    // Funnel's cert is a valid publicly-trusted Let's Encrypt cert, but validating it needs an
+    // NTP-synced clock, which isn't guaranteed yet this early in boot - skip validation and rely
+    // on PLEX_TOKEN as the auth boundary instead, same as the plain-HTTP local path already does.
+    static WiFiClientSecure secureClient;
+    secureClient.setInsecure();
+    http.begin(secureClient, funnelUrl);
+    if (jsonAccept) http.addHeader("Accept", "application/json");
+    http.setConnectTimeout(funnelTimeoutMs);
+    http.setTimeout(funnelTimeoutMs);
+    return http.GET();
+}
+
 FetchResult fetchSessions(Session* out, int maxSessions, int* count) {
     *count = 0;
 
-    String url = String("http://") + PLEX_SERVER_IP + ":" + String(PLEX_SERVER_PORT) +
-                  "/status/sessions?X-Plex-Token=" + PLEX_TOKEN;
-
     HTTPClient http;
-    http.begin(url);
-    http.addHeader("Accept", "application/json");
-    http.setConnectTimeout(3000);
-    http.setTimeout(3000);
-
-    int httpCode = http.GET();
+    int httpCode = plexHttpGet(http, "/status/sessions?X-Plex-Token=" + String(PLEX_TOKEN));
     if (httpCode != HTTP_CODE_OK) {
         http.end();
         return FetchResult::NETWORK_ERROR;
@@ -119,18 +136,12 @@ FetchResult fetchRecentViews(RecentView* out, int maxViews, int* count) {
     *count = 0;
 
     // 1. Fetch recent watch history, most recent first.
-    String historyUrl = String("http://") + PLEX_SERVER_IP + ":" + String(PLEX_SERVER_PORT) +
-                         "/status/sessions/history/all?sort=viewedAt:desc&X-Plex-Container-Start=0"
-                         "&X-Plex-Container-Size=" +
-                         String(HISTORY_FETCH_SIZE) + "&X-Plex-Token=" + PLEX_TOKEN;
+    String historyPath = "/status/sessions/history/all?sort=viewedAt:desc&X-Plex-Container-Start=0"
+                          "&X-Plex-Container-Size=" +
+                          String(HISTORY_FETCH_SIZE) + "&X-Plex-Token=" + PLEX_TOKEN;
 
     HTTPClient http;
-    http.begin(historyUrl);
-    http.addHeader("Accept", "application/json");
-    http.setConnectTimeout(3000);
-    http.setTimeout(3000);
-
-    int httpCode = http.GET();
+    int httpCode = plexHttpGet(http, historyPath);
     if (httpCode != HTTP_CODE_OK) {
         http.end();
         return FetchResult::NETWORK_ERROR;
@@ -198,16 +209,8 @@ FetchResult fetchRecentViews(RecentView* out, int maxViews, int* count) {
 
     // 2. Resolve accountID -> username. Best-effort: if this call fails, still return the
     // titles/subtitles we already have, just with "Unknown" in place of a name.
-    String acctUrl = String("http://") + PLEX_SERVER_IP + ":" + String(PLEX_SERVER_PORT) +
-                      "/accounts?X-Plex-Token=" + PLEX_TOKEN;
-
     HTTPClient acctHttp;
-    acctHttp.begin(acctUrl);
-    acctHttp.addHeader("Accept", "application/json");
-    acctHttp.setConnectTimeout(3000);
-    acctHttp.setTimeout(3000);
-
-    int acctCode = acctHttp.GET();
+    int acctCode = plexHttpGet(acctHttp, "/accounts?X-Plex-Token=" + String(PLEX_TOKEN));
     JsonDocument acctDoc;
     bool haveAccounts = false;
     if (acctCode == HTTP_CODE_OK) {
@@ -246,7 +249,7 @@ FetchResult fetchRecentViews(RecentView* out, int maxViews, int* count) {
     return FetchResult::OK;
 }
 
-String buildArtUrl(const char* thumbPath, int width, int height) {
+String buildArtPath(const char* thumbPath, int width, int height) {
     // The transcoder's "url" param wants the plain library-relative path (e.g.
     // "/library/metadata/123/thumb/456"), resolved internally - passing a full http://host:port
     // URL here 404s, since Plex treats that as an external image reference instead.
@@ -255,8 +258,6 @@ String buildArtUrl(const char* thumbPath, int width, int height) {
     // doesn't clamp to the requested box - e.g. a 200x150 request can come back 200x300 for a
     // portrait source). Rather than chase undocumented transcoder flags, we request a plain
     // fit and center-crop it ourselves in fetchAndDecodeArt() using the JPEG's real dimensions.
-    String url = String("http://") + PLEX_SERVER_IP + ":" + String(PLEX_SERVER_PORT) +
-                 "/photo/:/transcode?width=" + String(width) + "&height=" + String(height) +
-                 "&url=" + urlEncode(thumbPath) + "&X-Plex-Token=" + PLEX_TOKEN;
-    return url;
+    return "/photo/:/transcode?width=" + String(width) + "&height=" + String(height) +
+           "&url=" + urlEncode(thumbPath) + "&X-Plex-Token=" + PLEX_TOKEN;
 }

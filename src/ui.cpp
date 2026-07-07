@@ -26,6 +26,7 @@ static lv_obj_t* s_errorView;
 static lv_obj_t* s_idleView;
 static lv_obj_t* s_singleView;
 static lv_obj_t* s_tableView;
+static lv_obj_t* s_setupView;
 
 static lv_obj_t* s_artImg;
 static lv_obj_t* s_userLabel;
@@ -106,6 +107,7 @@ static void hideAllViews() {
     lv_obj_add_flag(s_idleView, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_singleView, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_tableView, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(s_setupView, LV_OBJ_FLAG_HIDDEN);
 }
 
 void ui_init() {
@@ -129,6 +131,24 @@ void ui_init() {
     lv_label_set_long_mode(errLabel, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_align(errLabel, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_center(errLabel);
+
+    // --- WiFi setup view ---
+    s_setupView = lv_obj_create(scr);
+    lv_obj_set_size(s_setupView, 320, 240);
+    lv_obj_set_pos(s_setupView, 0, 0);
+    lv_obj_set_style_bg_color(s_setupView, lv_color_hex(COLOR_BLUE), 0);
+    lv_obj_set_style_border_width(s_setupView, 0, 0);
+    lv_obj_set_style_radius(s_setupView, 0, 0);
+    lv_obj_clear_flag(s_setupView, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t* setupLabel = lv_label_create(s_setupView);
+    lv_label_set_text(setupLabel, "WiFi Setup\n\nConnect to \"CYD-Setup\"\nthen open 192.168.4.1");
+    lv_obj_set_style_text_font(setupLabel, &jetbrains_mono_24, 0);
+    lv_obj_set_style_text_color(setupLabel, lv_color_hex(COLOR_BG), 0);
+    lv_obj_set_width(setupLabel, 280);
+    lv_label_set_long_mode(setupLabel, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_align(setupLabel, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_center(setupLabel);
 
     // --- Idle view ---
     s_idleView = lv_obj_create(scr);
@@ -370,6 +390,9 @@ void ui_update(DisplayMode mode, const Session* sessions, int count, const uint1
         case DisplayMode::TABLE:
             lv_obj_clear_flag(s_tableView, LV_OBJ_FLAG_HIDDEN);
             updateTableView(sessions, count);
+            break;
+        case DisplayMode::WIFI_SETUP:
+            lv_obj_clear_flag(s_setupView, LV_OBJ_FLAG_HIDDEN);
             break;
     }
 }

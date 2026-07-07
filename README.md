@@ -3,12 +3,18 @@
 A Plex now-playing dashboard for the ESP32-2432S028R ("Cheap Yellow Display" / CYD) - a
 $10 board with a 320x240 ILI9341 touch LCD, WiFi/BT, and a dual-core ESP32.
 
-It polls your local Plex Media Server and shows:
+It polls your Plex Media Server and shows:
 - **Nobody streaming** - an idle screen.
 - **One active session** - full-screen cover art with a title/artist/progress overlay.
 - **Multiple active sessions** - a dark-themed table, one row per user (who's watching what).
   Drag on the table to scroll if there are more sessions than fit on screen.
 - **Plex server unreachable** - a red warning screen, until it recovers.
+- **WiFi setup** - a blue screen with instructions, shown when the device doesn't recognize
+  any nearby network (see [Portable use / WiFi setup](#portable-use--wifi-setup) below).
+
+The device is portable: it remembers up to 5 WiFi networks it has joined before, and reaches
+your Plex server over your home LAN when possible, falling back to a Tailscale Funnel URL when
+it isn't.
 
 Every screen has the server's name in a bar across the top-left, and a live clock
 (12-hour, e.g. `9:05pm`) in the top-right, synced over NTP.
@@ -48,12 +54,13 @@ configurable night hours (10pm-8am by default) - whichever applies first.
    Edit `include/secrets.h`:
 
    ```c
-   #define WIFI_SSID "YourWiFiName"
-   #define WIFI_PASSWORD "YourWiFiPassword"
-
-   #define PLEX_SERVER_IP "192.168.1.50"   // local IP or hostname of your Plex server
+   #define PLEX_LOCAL_IP "192.168.1.50"    // local IP of your Plex server (tried first)
    #define PLEX_SERVER_PORT 32400
    #define PLEX_SERVER_NAME "MyPlexServer" // shown in the top bar on every screen
+
+   // Tailscale Funnel hostname for your Plex server, e.g. "myplexhost.tailxxxx.ts.net" -
+   // used as a fallback when PLEX_LOCAL_IP isn't reachable. See "Portable use" below.
+   #define PLEX_FUNNEL_HOST "myplexhost.example.ts.net"
 
    #define PLEX_TOKEN "your-plex-token-here"
 
@@ -67,7 +74,13 @@ configurable night hours (10pm-8am by default) - whichever applies first.
    #define NIGHT_MODE_END_HOUR 8    // 8:00 AM
    ```
 
-   `secrets.h` is gitignored - it never gets committed.
+   `secrets.h` is gitignored - it never gets committed. `PLEX_FUNNEL_HOST` is only needed for
+   the portable/away-from-home use case (see below); if you don't use Tailscale, any
+   placeholder value is fine - the fallback attempt will just fail harmlessly if it's ever
+   used.
+
+   Unlike the other settings, WiFi credentials aren't set in `secrets.h` - see
+   [Portable use / WiFi setup](#portable-use--wifi-setup) below.
 
 2. Plug in the board via USB and find its serial port:
 
@@ -89,9 +102,39 @@ configurable night hours (10pm-8am by default) - whichever applies first.
    pio device monitor --port <PORT> --baud 115200
    ```
 
-   You should see WiFi connect, then periodic Plex poll results and (when something's
-   playing) art fetch logs. Touch presses log their raw coordinates too
+   On first boot (no saved WiFi network yet) the screen shows WiFi setup instructions instead
+   of connecting - see below. Once connected, you should see periodic Plex poll results and
+   (when something's playing) art fetch logs. Touch presses log their raw coordinates too
    (`[touch] raw x=... y=...`), useful if you ever need to re-tune the calibration bounds.
+
+## Portable use / WiFi setup
+
+The device remembers up to 5 WiFi networks it has joined successfully, most-recent first, and
+tries each in turn at boot. If none connect (e.g. it's been moved to a new location), it opens
+its own WiFi network, `CYD-Setup`, with a captive-portal page for entering new credentials:
+
+1. Connect a phone or laptop to the `CYD-Setup` network. Most devices auto-open the sign-in
+   page; otherwise browse to `http://192.168.4.1`.
+2. Pick your WiFi network from the list and enter its password, then submit.
+3. The device restarts and joins the new network, remembering it for next time.
+
+There's no way to re-open this portal on demand while a known network is still in range - it's
+only triggered automatically when nothing else connects, which covers the normal "moved
+somewhere new" case.
+
+To keep reaching your Plex server once you're away from home, run
+[Tailscale Funnel](https://tailscale.com/kb/1223/funnel) on the Plex host:
+
+```
+tailscale funnel --bg 32400
+```
+
+This exposes your Plex server at a stable public HTTPS URL (`https://<host>.<tailnet>.ts.net`)
+that forwards straight to Plex's local port - set that hostname as `PLEX_FUNNEL_HOST` in
+`secrets.h`. The device always tries `PLEX_LOCAL_IP` first (fast, no internet dependency at
+home) and only falls back to the Funnel URL when the local address doesn't respond. Note this
+exposes Plex's HTTP API to the public internet, gated only by your `PLEX_TOKEN` (same as Plex's
+own API access control today) - treat the `*.ts.net` hostname as semi-secret.
 
 ## Touch calibration
 

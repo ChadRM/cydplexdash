@@ -7,6 +7,7 @@
 #include <time.h>
 
 #include "secrets.h"
+#include "wifi_manager.h"
 
 static const unsigned long IDLE_SCREENSAVER_MS = 5UL * 60UL * 1000UL; // 5 minutes
 
@@ -75,14 +76,11 @@ static bool jpegOutputCallback(int16_t x, int16_t y, uint16_t w, uint16_t h, uin
 }
 
 static bool fetchAndDecodeArt(const char* thumbPath) {
-    String url = buildArtUrl(thumbPath, g_artBufW, g_artBufH);
+    String path = buildArtPath(thumbPath, g_artBufW, g_artBufH);
 
     HTTPClient http;
-    http.begin(url);
-    http.setConnectTimeout(4000);
-    http.setTimeout(4000);
-
-    int code = http.GET();
+    int code = plexHttpGet(http, path, /*jsonAccept=*/false, /*localTimeoutMs=*/4000,
+                            /*funnelTimeoutMs=*/6000);
     if (code != HTTP_CODE_OK) {
         Serial.printf("[art] GET failed, HTTP code %d\n", code);
         http.end();
@@ -133,7 +131,7 @@ static bool fetchAndDecodeArt(const char* thumbPath) {
     g_decodeMaxX = 0;
     g_decodeMaxY = 0;
 
-    // Plex's fit isn't clamped to our requested box (see buildArtUrl), so center-crop
+    // Plex's fit isn't clamped to our requested box (see buildArtPath), so center-crop
     // ourselves: find the JPEG's real size and draw at an offset that centers it over our
     // buffer. Offsets can be negative when the source exceeds our box on that axis - the
     // callback's existing bounds clipping then naturally crops the overflow.
@@ -190,9 +188,9 @@ static void publishState(DisplayMode mode, const Session* sessions, int count, b
 static void networkTaskFn(void* param) {
     (void)param;
 
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-    Serial.printf("[net] connecting to WiFi \"%s\"...\n", WIFI_SSID);
+    wifiManagerConnect([]() {
+        publishState(DisplayMode::WIFI_SETUP, nullptr, 0, false, false);
+    });
 
     int consecutiveFailures = 0;
     bool loggedConnected = false;
@@ -311,7 +309,9 @@ void networkTaskStart() {
                   hasPsram ? "yes" : "no", g_artBufW, g_artBufH, (unsigned)g_jpegScratchCap,
                   (unsigned)ESP.getFreeHeap());
 
-    xTaskCreatePinnedToCore(networkTaskFn, "networkTask", 8192, nullptr, 1, nullptr, 0);
+    // Stack bumped from the original 8192 to give the WiFi setup portal (WebServer + DNSServer +
+    // JSON (de)serialization, only used when no saved network connects) enough headroom.
+    xTaskCreatePinnedToCore(networkTaskFn, "networkTask", 16384, nullptr, 1, nullptr, 0);
 }
 
 bool networkTaskPollUpdate(SharedState* outState) {

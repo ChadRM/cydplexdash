@@ -6,7 +6,8 @@ enum class DisplayMode : uint8_t {
     ERROR_SCREEN,
     IDLE,
     SINGLE,
-    TABLE
+    TABLE,
+    WIFI_SETUP
 };
 
 // Snapshot of state safe to read from the UI/core-1 loop.
