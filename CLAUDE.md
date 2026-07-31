@@ -5,10 +5,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 A PlatformIO/Arduino firmware project for the ESP32-2432S028R ("Cheap Yellow Display" / CYD) -
-a $10 board with a 320x240 ILI9341 touch LCD. It polls a local Plex Media Server and shows a
-now-playing dashboard: idle screen, full-screen cover art for one session, a scrollable table
-for multiple concurrent sessions, or a red error screen when Plex is unreachable. See
-README.md for the full feature/setup description (secrets, touch calibration, hardware pins).
+a $10 board with a 320x240 ILI9341 touch LCD. It polls Tautulli (sessions + watch history - its
+per-user "friendly_name" is cleaner than Plex's raw account username) and Plex directly (cover
+art only) and shows a now-playing dashboard: idle screen, full-screen cover art for one session,
+a scrollable table for multiple concurrent sessions, or a red error screen when Tautulli is
+unreachable. See README.md for the full feature/setup description (secrets, touch calibration,
+hardware pins).
 
 ## Commands
 
@@ -22,7 +24,8 @@ There is no test suite - this is device firmware; validate changes by flashing a
 the serial monitor / physical screen.
 
 `include/secrets.h` (gitignored, copy from `secrets.h.example`) holds WiFi credentials, the
-Plex server IP/port/token, and NTP/night-mode config - required for the project to build.
+Plex server IP/port/token (art only), the Tautulli host/port/API key (sessions + history), and
+NTP/night-mode config - required for the project to build.
 
 ### Regenerating bitmap fonts
 
@@ -40,11 +43,11 @@ be used directly as the string value once the icon font is applied to a label/ce
 
 **Two FreeRTOS tasks split by core**, communicating through one mutex-guarded struct:
 
-- **Core 0** (`network_task.cpp`, `networkTaskFn`): owns WiFi, polls Plex's
-  `/status/sessions` every 3s (`plex_api.cpp`), fetches/decodes cover art JPEGs
-  (`TJpg_Decoder`), and computes screensaver/night-mode state. On every poll it builds a fresh
-  `SharedState` and publishes it via `publishState()` (takes `g_mutex`, copies in, sets
-  `g_dirty`).
+- **Core 0** (`network_task.cpp`, `networkTaskFn`): owns WiFi, polls Tautulli's `get_activity`
+  every 3s (`tautulli_api.cpp`) for sessions and `get_history` for the idle screen's recent-views
+  list, fetches/decodes cover art JPEGs from Plex directly (`plex_api.cpp`, `TJpg_Decoder`), and
+  computes screensaver/night-mode state. On every poll it builds a fresh `SharedState` and
+  publishes it via `publishState()` (takes `g_mutex`, copies in, sets `g_dirty`).
 - **Core 1** (`main.cpp` `loop()` + `ui.cpp`): runs `lv_timer_handler()` every iteration, calls
   `networkTaskPollUpdate()` to non-blockingly check `g_dirty` and copy out a `SharedState` when
   new data exists, then hands it to `ui_update()`. Also drives touch input polling and the

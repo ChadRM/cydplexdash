@@ -7,6 +7,7 @@
 #include <time.h>
 
 #include "secrets.h"
+#include "tautulli_api.h" // fetchSessions/fetchRecentViews now poll Tautulli, not Plex directly
 #include "wifi_manager.h"
 
 static const unsigned long IDLE_SCREENSAVER_MS = 5UL * 60UL * 1000UL; // 5 minutes

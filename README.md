@@ -3,18 +3,20 @@
 A Plex now-playing dashboard for the ESP32-2432S028R ("Cheap Yellow Display" / CYD) - a
 $10 board with a 320x240 ILI9341 touch LCD, WiFi/BT, and a dual-core ESP32.
 
-It polls your Plex Media Server and shows:
+It polls [Tautulli](https://tautulli.com/) (which must be set up against your Plex server) for
+sessions and watch history - Tautulli's per-user "friendly name" is a cleaner display name than
+Plex's raw account username - and fetches cover art directly from Plex. It shows:
 - **Nobody streaming** - an idle screen.
 - **One active session** - full-screen cover art with a title/artist/progress overlay.
 - **Multiple active sessions** - a dark-themed table, one row per user (who's watching what).
   Drag on the table to scroll if there are more sessions than fit on screen.
-- **Plex server unreachable** - a red warning screen, until it recovers.
+- **Tautulli unreachable** - a red warning screen, until it recovers.
 - **WiFi setup** - a blue screen with instructions, shown when the device doesn't recognize
   any nearby network (see [Portable use / WiFi setup](#portable-use--wifi-setup) below).
 
 The device is portable: it remembers up to 5 WiFi networks it has joined before, and reaches
-your Plex server over your home LAN when possible, falling back to a Tailscale Funnel URL when
-it isn't.
+your Tautulli and Plex servers over your home LAN when possible, falling back to their
+respective Tailscale Funnel URLs when it isn't.
 
 Every screen has the server's name in a bar across the top-left, and a live clock
 (12-hour, e.g. `9:05pm`) in the top-right, synced over NTP.
@@ -41,7 +43,10 @@ configurable night hours (10pm-8am by default) - whichever applies first.
   VS Code extension.
 - A USB cable to the board's USB-C port (also used for flashing/serial).
 - Your Plex Media Server's local IP/hostname and an
-  [X-Plex-Token](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/).
+  [X-Plex-Token](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/)
+  (used for cover art).
+- A [Tautulli](https://tautulli.com/) instance set up against that Plex server, and its API key
+  (Settings > Web Interface > API in Tautulli's UI).
 
 ## Setup
 
@@ -63,6 +68,16 @@ configurable night hours (10pm-8am by default) - whichever applies first.
    #define PLEX_FUNNEL_HOST "myplexhost.example.ts.net"
 
    #define PLEX_TOKEN "your-plex-token-here"
+
+   // Tautulli - polled for sessions/watch history instead of Plex directly (cleaner usernames).
+   // Local IP of the Tautulli instance (often the same host as Plex).
+   #define TAUTULLI_LOCAL_IP "192.168.1.50"
+   #define TAUTULLI_PORT 8181
+   #define TAUTULLI_API_KEY "your-tautulli-api-key-here"
+
+   // Tailscale Funnel hostname for Tautulli - same idea as PLEX_FUNNEL_HOST above, only needed
+   // for portable use. See "Portable use / WiFi setup" below.
+   #define TAUTULLI_FUNNEL_HOST "myserver.example.ts.net"
 
    // NTP time sync (powers the on-screen clock and the night-mode schedule below)
    #define NTP_SERVER "pool.ntp.org"
@@ -136,6 +151,27 @@ home) and only falls back to the Funnel URL when the local address doesn't respo
 exposes Plex's HTTP API to the public internet, gated only by your `PLEX_TOKEN` (same as Plex's
 own API access control today) - treat the `*.ts.net` hostname as semi-secret.
 
+Sessions/history come from Tautulli instead, so it needs the same treatment - run Funnel for its
+port too (on whichever host runs Tautulli):
+
+```
+tailscale funnel --bg 8181
+```
+
+and set that hostname as `TAUTULLI_FUNNEL_HOST`. If Tautulli runs on the same host as Plex, that
+host already has a funnel bound to port 32400/443 - Tailscale Funnel supports up to 3 concurrent
+funnel ports per node, so Tautulli needs its own funnel port instead:
+
+```
+tailscale funnel --bg --https=8443 8181
+```
+
+with `TAUTULLI_FUNNEL_HOST` then including that port, e.g. `"nerdflix.cetacean-cloud.ts.net:8443"`
+(this is exactly how nerdflix is set up: Plex on the default 443, Tautulli on 8443). See the
+[Funnel docs](https://tailscale.com/kb/1223/funnel) for exact multi-port syntax. As with Plex,
+this exposes Tautulli's API to the public internet gated only by `TAUTULLI_API_KEY` - treat that
+hostname as semi-secret too.
+
 ## Touch calibration
 
 The raw ADC-to-pixel mapping is set from one unit's actual corner-press readings
@@ -148,7 +184,7 @@ and max.
 
 - No PSRAM is assumed by default; the code detects PSRAM at boot and uses a larger cover-art
   buffer automatically if present.
-- Polling interval is 3 seconds; the Plex server error screen appears after 2 consecutive
-  failed polls (~6s) to avoid flickering on a single transient blip.
-- Uses both ESP32 cores: core 0 handles WiFi/Plex polling and JPEG decode, core 1 runs the
-  LVGL UI loop and touch input.
+- Polling interval is 3 seconds; the server-unreachable error screen appears after 2 consecutive
+  failed Tautulli polls (~6s) to avoid flickering on a single transient blip.
+- Uses both ESP32 cores: core 0 handles WiFi/Tautulli polling and cover-art JPEG decode, core 1
+  runs the LVGL UI loop and touch input.
